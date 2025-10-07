@@ -1,5 +1,5 @@
 # ViT
-A simple ViT implementation in python with Pytorch leading to 93.5% accuracy on FashionMNIST after only 100 epochs.
+A simple ViT implementation in python with Pytorch leading to 93.5% accuracy on FashionMNIST after only 100 epochs. The same model achieved the same accuracy on the MNIST dataset after only 5 epochs.
 
 ## Requirements
 - Recommended, but optional : a CUDA-capable device
