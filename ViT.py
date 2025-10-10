@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import einops
 
 train_transform = transforms.Compose([
-    transforms.RandomCrop(28, padding=2),
+    transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
@@ -19,7 +19,7 @@ transform = transforms.Compose([
     transforms.Normalize((0.5,), (0.5,))  # mean=0.5, std=0.5 for grayscale
 ])
 
-
+"""
 # Download training data from open datasets.
 training_data = datasets.FashionMNIST(
     root="data",
@@ -35,16 +35,31 @@ test_data = datasets.FashionMNIST(
     download=True,
     transform=transform,
 )
+"""
 
-batch_size = 64
+training_data = datasets.CIFAR10(
+    root="data",
+    train=True,
+    download=True,
+    transform=train_transform,
+)
+
+test_data = datasets.CIFAR10(
+    root="data",
+    train=False,
+    download=True,
+    transform=transform,
+)
+
+batch_size = 256
 
 # Create data loader.
 train_dataloader = DataLoader(training_data, batch_size=batch_size)
 test_dataloader = DataLoader(test_data, batch_size=batch_size)
 
-for X, y in train_dataloader:
-    print(f"Shape of X [N, C, H, W]: {X.shape}")
-    print(f"Shape of y: {y.shape}")
+#for X, y in train_dataloader:
+#    print(f"Shape of X [N, C, H, W]: {X.shape}")
+#    print(f"Shape of y: {y.shape}")
 
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 print(f"Using {device} device")
@@ -53,14 +68,17 @@ print(f"Using {device} device")
 class ViT(nn.Module):
     def __init__(self):
         super().__init__()
-        self.patch_shape = (4, 4)
-        self.hidden_dim = 256
-        self.L = 5
+        self.patch_shape = (8, 8)
+        self.hidden_dim = 1024
+        self.L = 12
+        self.image_size = (32, 32)
+        self.channels = 3
         
-        channels = 1 # (more channels need a change here)
-        patch_dim = channels * self.patch_shape[0] * self.patch_shape[1]
-        num_patches = (28 * 28) // (4 * 4)
+        patch_dim = self.channels * self.patch_shape[0] * self.patch_shape[1]
+        num_patches = (self.image_size[0] * self.image_size[1]) // (self.patch_shape[0] * self.patch_shape[1])
 
+        self.conv = nn.Conv2d(3, 3, (16, 16), padding='same')
+        self.dropout = nn.Dropout(0.1)
         self.hidden_layer = nn.Linear(patch_dim, self.hidden_dim)
         self.learnable_classification_token = nn.Parameter(torch.zeros((1, self.hidden_dim)))
         self.positional_embeddings = nn.Parameter(torch.zeros((num_patches+1, self.hidden_dim)))
@@ -75,6 +93,7 @@ class ViT(nn.Module):
 
         # x.shape = (batch_size, 1, 28, 28) for FashionMNIST
         # extract patches -> (batch_size, 14*14, 1*2*2)
+        x = self.conv(x) # keep the same shape
         patches: torch.Tensor = einops.rearrange(
             x,
             'b c (h p1) (w p2) -> b (h w) (c p1 p2)',
@@ -83,6 +102,7 @@ class ViT(nn.Module):
         )
 
         # reshape to (batch_size, num_patches, hidden_dim) and concatenate the learnable vector token
+        patches = self.dropout(patches)
         hidden: torch.Tensor = self.hidden_layer(patches)
         lct = self.learnable_classification_token.expand(x.shape[0], -1, -1) # (batch_size, 1, hidden_dim)
         hidden: torch.Tensor = torch.cat([hidden, lct], dim=1) # (batch_size, num_patches + 1, hidden_dim)
@@ -113,7 +133,7 @@ class ViT(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(self, hidden_dim):
         super().__init__()
-        self.num_heads = 8
+        self.num_heads = 16
         self.parent_hidden_dim = hidden_dim
         self.subspace_dim = self.parent_hidden_dim // self.num_heads
         self.QKV = nn.Linear(self.parent_hidden_dim, 3*self.parent_hidden_dim)
@@ -197,26 +217,39 @@ def train(dataloader, model, loss_fn, optimizer):
             loss, current = loss.item(), (batch + 1) * len(X)
             print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
 
-def test(dataloader, model, loss_fn):
-    size = len(dataloader.dataset)
-    num_batches = len(dataloader)
+def test(dataloader, model, loss_fn, max=None):
+    if max is None:
+        size = len(dataloader.dataset)
+        num_batches = len(dataloader)
+    else:
+        size = max
+        num_batches = max // batch_size
     model.eval()
     test_loss, correct = 0, 0
+    k = 0
     with torch.no_grad():
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
             pred = model(X)
             test_loss += loss_fn(pred, y).item()
             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+            if k >= num_batches:
+                break
+            k += 1
     test_loss /= num_batches
     correct /= size
-    print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+    print(f"Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
 
 epochs = 100
 scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
 for t in range(epochs):
     print(f"Epoch {t+1}\n----------------------------------------")
     train(train_dataloader, model, loss_fn, optimizer)
-    test(test_dataloader, model, loss_fn)
+
+    print("Validating test dataset...")
+    test(test_dataloader, model, loss_fn, max=256)
+    print("Validating train dataset...")
+    test(train_dataloader, model, loss_fn, max=256)
+    
     scheduler.step()
 print("Done!")
