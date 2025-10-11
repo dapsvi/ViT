@@ -51,7 +51,7 @@ class ViT(nn.Module):
     def __init__(self):
         super().__init__()
         self.patch_shape = (8, 8)
-        self.hidden_dim = 1024
+        self.hidden_dim = 512
         self.L = 12
         self.image_size = (32, 32)
         self.channels = 3
@@ -61,7 +61,12 @@ class ViT(nn.Module):
 
         self.conv = nn.Conv2d(3, 3, (16, 16), padding='same')
         self.dropout = nn.Dropout(0.3)
-        self.hidden_layer = nn.Linear(patch_dim, self.hidden_dim)
+        self.hidden_layer = nn.Sequential(
+            nn.Linear(patch_dim, self.hidden_dim),
+            nn.LeakyReLU(0.1),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.Dropout(0.3),
+        )
         self.learnable_classification_token = nn.Parameter(torch.zeros((1, self.hidden_dim)))
         self.positional_embeddings = nn.Parameter(torch.zeros((num_patches+1, self.hidden_dim)))
         self.encoders = nn.ModuleList([
@@ -226,7 +231,7 @@ def test(dataloader, model, loss_fn, max=None):
     print(f"Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
     return 100*correct, test_loss
 
-epochs = 100
+epochs = 200
 scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
 
 test_acc = []
@@ -239,28 +244,33 @@ for t in range(epochs):
 
     print("Validating test dataset...")
     test_res = test(test_dataloader, model, loss_fn, max=512)
-    #test_acc.append(test_res[0])
+    test_acc.append(test_res[0])
     print("Validating train dataset...")
     train_res = test(train_dataloader, model, loss_fn, max=512)
     train_acc.append(train_res[0])
-    train_loss.append(train_res[0])
+    train_loss.append(train_res[1])
     
     scheduler.step()
+
+
+
+X = np.arange(1, len(test_acc)+1)
 
 
 test_acc = np.array(test_acc)
 train_acc = np.array(train_acc)
 train_loss = np.array(train_loss)
 
-X = np.arange(1, len(test_acc)+1)
 
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(2)
 
-ax.plot(X, test_acc, color='green', label='test accuracy')
-ax.plot(X, train_acc, color='red', label='train accuracy')
+ax[0].plot(X, test_acc, color='green', label='test accuracy')
+ax[0].plot(X, train_acc, color='red', label='train accuracy')
 
-fig_loss, ax_loss = plt.subplots()
 
-ax_loss.plot(X, train_loss, color='blue', label='train loss')
+ax[1].plot(X, train_loss, color='blue', label='train loss')
 
+ax[0].legend()
+ax[1].legend()
+fig.tight_layout()
 plt.show()
