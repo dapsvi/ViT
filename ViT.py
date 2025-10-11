@@ -5,37 +5,19 @@ from torchvision import datasets
 from torchvision import transforms
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import einops
+import matplotlib.pyplot as plt
+import numpy as np
 
 train_transform = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
 ])
 
 
-transform = transforms.Compose([
+test_transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))  # mean=0.5, std=0.5 for grayscale
 ])
-
-"""
-# Download training data from open datasets.
-training_data = datasets.FashionMNIST(
-    root="data",
-    train=True,
-    download=True,
-    transform=train_transform,
-)
-
-# Download test data from open datasets.
-test_data = datasets.FashionMNIST(
-    root="data",
-    train=False,
-    download=True,
-    transform=transform,
-)
-"""
 
 training_data = datasets.CIFAR10(
     root="data",
@@ -48,21 +30,21 @@ test_data = datasets.CIFAR10(
     root="data",
     train=False,
     download=True,
-    transform=transform,
+    transform=test_transform,
 )
 
-batch_size = 256
+batch_size = 512
 
 # Create data loader.
 train_dataloader = DataLoader(training_data, batch_size=batch_size)
 test_dataloader = DataLoader(test_data, batch_size=batch_size)
 
-#for X, y in train_dataloader:
-#    print(f"Shape of X [N, C, H, W]: {X.shape}")
-#    print(f"Shape of y: {y.shape}")
-
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 print(f"Using {device} device")
+
+# enable cudnn autotuner if available
+if device == "cuda":
+    torch.backends.cudnn.benchmark = True
 
 # Define model
 class ViT(nn.Module):
@@ -78,7 +60,7 @@ class ViT(nn.Module):
         num_patches = (self.image_size[0] * self.image_size[1]) // (self.patch_shape[0] * self.patch_shape[1])
 
         self.conv = nn.Conv2d(3, 3, (16, 16), padding='same')
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.3)
         self.hidden_layer = nn.Linear(patch_dim, self.hidden_dim)
         self.learnable_classification_token = nn.Parameter(torch.zeros((1, self.hidden_dim)))
         self.positional_embeddings = nn.Parameter(torch.zeros((num_patches+1, self.hidden_dim)))
@@ -102,8 +84,8 @@ class ViT(nn.Module):
         )
 
         # reshape to (batch_size, num_patches, hidden_dim) and concatenate the learnable vector token
-        patches = self.dropout(patches)
         hidden: torch.Tensor = self.hidden_layer(patches)
+        hidden = self.dropout(hidden)
         lct = self.learnable_classification_token.expand(x.shape[0], -1, -1) # (batch_size, 1, hidden_dim)
         hidden: torch.Tensor = torch.cat([hidden, lct], dim=1) # (batch_size, num_patches + 1, hidden_dim)
 
@@ -228,28 +210,57 @@ def test(dataloader, model, loss_fn, max=None):
     test_loss, correct = 0, 0
     k = 0
     with torch.no_grad():
+        total_samples = 0
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
             pred = model(X)
             test_loss += loss_fn(pred, y).item()
             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
-            if k >= num_batches:
-                break
             k += 1
+            total_samples += len(X)
+            if max is not None and total_samples >= max:
+                break
     test_loss /= num_batches
-    correct /= size
+    total_samples = k * batch_size
+    correct /= total_samples
     print(f"Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+    return 100*correct, test_loss
 
 epochs = 100
 scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
+
+test_acc = []
+train_acc = []
+train_loss = []
+
 for t in range(epochs):
     print(f"Epoch {t+1}\n----------------------------------------")
     train(train_dataloader, model, loss_fn, optimizer)
 
     print("Validating test dataset...")
-    test(test_dataloader, model, loss_fn, max=256)
+    test_res = test(test_dataloader, model, loss_fn, max=512)
+    #test_acc.append(test_res[0])
     print("Validating train dataset...")
-    test(train_dataloader, model, loss_fn, max=256)
+    train_res = test(train_dataloader, model, loss_fn, max=512)
+    train_acc.append(train_res[0])
+    train_loss.append(train_res[0])
     
     scheduler.step()
-print("Done!")
+
+
+test_acc = np.array(test_acc)
+train_acc = np.array(train_acc)
+train_loss = np.array(train_loss)
+
+X = np.arange(1, len(test_acc)+1)
+
+fig, ax = plt.subplots()
+
+ax.plot(X, test_acc, color='green', label='test accuracy')
+ax.plot(X, train_acc, color='red', label='train accuracy')
+
+fig_loss, ax_loss = plt.subplots()
+
+ax_loss.plot(X, train_loss, color='blue', label='train loss')
+
+plt.show()
