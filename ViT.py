@@ -63,9 +63,10 @@ class ViT(nn.Module):
         self.dropout = nn.Dropout(0.3)
         self.hidden_layer = nn.Sequential(
             nn.Linear(patch_dim, self.hidden_dim),
+            nn.Dropout(0.5),
             nn.LeakyReLU(0.1),
             nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),
         )
         self.learnable_classification_token = nn.Parameter(torch.zeros((1, self.hidden_dim)))
         self.positional_embeddings = nn.Parameter(torch.zeros((num_patches+1, self.hidden_dim)))
@@ -133,7 +134,7 @@ class TransformerEncoder(nn.Module):
             nn.Linear(self.parent_hidden_dim * 4, self.parent_hidden_dim)
         )
         self.output_projection = nn.Linear(hidden_dim, hidden_dim)
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.4)
     
     def forward(self, x):
         # x.shape = (batch_size, num_patches + 1, hidden_dim)
